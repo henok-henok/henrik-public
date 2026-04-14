@@ -1,0 +1,24 @@
+SUBMISSION AGREEMENT
+====================
+
+Agreement ID: SA-TEST-2024-001
+Date: 2024-01-15
+
+Parties:
+  Producer: Test Organization AB (org.nr 556000-0001)
+  Archive:  Municipal Archive
+
+This agreement covers the transfer of digital records from the
+Test Project Database to the Municipal Archive.
+
+Content:
+  - Project records (XML exports)
+  - Supporting documentation (CSV reports)
+  - Technical metadata (PREMIS)
+  - Descriptive metadata (EAD)
+
+Format: E-ARK SIP v2.1
+Schema: ERMS / citserms_v2_1
+
+Transfer schedule: One-time delivery
+Retention: Permanent preservation

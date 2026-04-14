@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://www.archivesportaleurope.net/Portal/profiles/ERMS/"
+           xmlns:erms="http://www.archivesportaleurope.net/Portal/profiles/ERMS/"
+           elementFormDefault="qualified">
+
+  <xs:element name="ERMS">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="control" type="erms:controlType"/>
+        <xs:element name="aggregations" type="erms:aggregationsType" minOccurs="0"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:complexType name="controlType">
+    <xs:sequence>
+      <xs:element name="identification" type="xs:string"/>
+      <xs:element name="informationClass" type="xs:string" minOccurs="0"/>
+      <xs:element name="classificationSchema" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="aggregationsType">
+    <xs:sequence>
+      <xs:element name="aggregation" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="objectId" type="xs:string"/>
+            <xs:element name="title" type="xs:string"/>
+            <xs:element name="description" type="xs:string" minOccurs="0"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>

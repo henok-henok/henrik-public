@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ead xmlns="urn:isbn:1-931666-22-9">
+  <eadheader>
+    <eadid>TEST-EAD-001</eadid>
+    <filedesc>
+      <titlestmt>
+        <titleproper>Test Archive Collection</titleproper>
+        <author>Test Organization</author>
+      </titlestmt>
+    </filedesc>
+  </eadheader>
+  <archdesc level="collection">
+    <did>
+      <unittitle>Test Data Collection for E-ARK SIP Creator</unittitle>
+      <unitdate normal="2024-01-01/2024-12-31">2024</unitdate>
+      <abstract>Sample descriptive metadata for testing the E-ARK SIP Creator application.</abstract>
+      <origination>
+        <corpname>Test Organization AB</corpname>
+      </origination>
+      <langmaterial>
+        <language langcode="swe">Swedish</language>
+      </langmaterial>
+    </did>
+    <scopecontent>
+      <p>This collection contains test data used to verify the E-ARK SIP Creator tool.</p>
+    </scopecontent>
+  </archdesc>
+</ead>

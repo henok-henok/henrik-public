@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<representationMetadata>
+  <representation id="rep_1">
+    <label>Primary representation</label>
+    <type>original</type>
+    <description>Original data files as extracted from source system.</description>
+    <created>2024-01-15T10:00:00Z</created>
+    <formatInfo>
+      <format>XML</format>
+      <version>1.0</version>
+      <mimeType>text/xml</mimeType>
+    </formatInfo>
+    <fileCount>3</fileCount>
+  </representation>
+</representationMetadata>

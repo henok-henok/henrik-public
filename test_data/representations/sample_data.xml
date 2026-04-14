@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ERMS xmlns="http://www.archivesportaleurope.net/Portal/profiles/ERMS/">
+  <control>
+    <identification>TEST-2024-001</identification>
+    <informationClass>Public</informationClass>
+    <classificationSchema>TestSchema v1.0</classificationSchema>
+  </control>
+  <aggregations>
+    <aggregation>
+      <objectId>AGG-001</objectId>
+      <title>Test Aggregation 1</title>
+      <description>First test aggregation for E-ARK SIP Creator testing.</description>
+    </aggregation>
+    <aggregation>
+      <objectId>AGG-002</objectId>
+      <title>Test Aggregation 2</title>
+      <description>Second test aggregation with additional records.</description>
+    </aggregation>
+  </aggregations>
+</ERMS>
