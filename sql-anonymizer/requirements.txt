@@ -1,0 +1,2 @@
+streamlit==1.54.0  # CSS selectors in app.py are pinned to this version
+sqlglot==28.10.1
