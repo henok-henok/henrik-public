@@ -1,0 +1,47 @@
+{
+  "header": {
+    "label": "Test Archive Package",
+    "type": "Datasets",
+    "other_type": "",
+    "contentinformationtype": "citserms_v2_1",
+    "other_contentinformationtype": "",
+    "recordstatus": "TEST"
+  },
+  "agents": {
+    "archivist": {
+      "name": "Test Organization AB",
+      "id_type": "ORG",
+      "id_value": "556000-0001"
+    },
+    "creator": {
+      "name": "Municipal Archive",
+      "id_type": "ORG",
+      "id_value": "200000-0002"
+    },
+    "system": {
+      "name": "Test Database",
+      "version": "1.0"
+    }
+  },
+  "alt_record_ids": {
+    "SUBMISSIONAGREEMENT": "SA-TEST-2024-001",
+    "PREVIOUSSUBMISSIONAGREEMENT": "",
+    "REFERENCECODE": "",
+    "PREVIOUSREFERENCECODE": ""
+  },
+  "files": {
+    "schema": ["test_data/schemas"],
+    "representation": {
+      "paths": ["test_data/representations"],
+      "subdirectories": true
+    },
+    "representationmetadata": ["test_data/representation_metadata"],
+    "descriptivemetadata": ["test_data/descriptive_metadata"],
+    "preservationmetadata": ["test_data/preservation_metadata"],
+    "documentation": ["test_data/documentation"]
+  },
+  "output": {
+    "folder": "output",
+    "zip": false
+  }
+}

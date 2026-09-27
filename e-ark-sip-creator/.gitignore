@@ -1,0 +1,12 @@
+# Real job files for headless use hold archivist names and paths to
+# client material, so they never enter the repo. Name them
+# <name>.job.json. Only job.example.json (placeholder values) is
+# committed; it does not match these patterns.
+job.json
+*.job.json
+
+# Written by a run of the example job (output/) and by the GUI (the log
+# file, which holds source paths). This repo's root .gitignore covers both
+# as well; these lines matter in the public copy.
+output/
+*.log

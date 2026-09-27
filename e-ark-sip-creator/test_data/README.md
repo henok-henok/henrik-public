@@ -49,7 +49,6 @@ test_data/
 │   └── ERMS.xsd                    → Schemas selector
 ├── representations/
 │   ├── sample_data.xml             → Representations selector
-│   ├── report.csv
 │   └── subdir/
 │       └── nested_file.txt         → (with "Include subdirectories")
 ├── representation_metadata/

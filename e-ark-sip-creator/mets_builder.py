@@ -7,20 +7,34 @@ returning an lxml ElementTree.
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from xml.etree.ElementTree import QName
 
 from lxml import etree
 
 APP_NAME = "E-ARK SIP Creator"
-APP_VERSION = "1.0.0-beta.1"
+APP_VERSION = "1.1.0-beta.2"
+
+METS_NS = "http://www.loc.gov/METS/"
 
 NS = {
     "xsi": "http://www.w3.org/2001/XMLSchema-instance",
     "xlink": "http://www.w3.org/1999/xlink",
-    "ext": "ExtensionMETS",
     "sip": "https://DILCIS.eu/XML/METS/SIPExtensionMETS",
     "csip": "https://DILCIS.eu/XML/METS/CSIPExtensionMETS",
 }
+
+# Namespace -> schema pairs for xsi:schemaLocation, taken verbatim (values and
+# order) from the example METS root in the E-ARK SIP METS profile v2.1.0.
+# The namespace URIs are identifiers, not download locations; appending .xsd
+# to them does not give a working URL. xlink points at LoC's copy because
+# mets.xsd references attribute groups that the W3C xlink.xsd lacks.
+SCHEMA_LOCATIONS = [
+    (METS_NS, "http://www.loc.gov/standards/mets/mets.xsd"),
+    (NS["xlink"], "http://www.loc.gov/standards/mets/xlink.xsd"),
+    (NS["csip"], "https://earkcsip.dilcis.eu/schema/DILCISExtensionMETS.xsd"),
+    (NS["sip"], "https://earksip.dilcis.eu/schema/DILCISExtensionSIPMETS.xsd"),
+]
 
 
 @dataclass
@@ -90,6 +104,7 @@ def _add_file_group(
     files: dict,
     use_label: str,
     contentinformationtype: str | None = None,
+    othercontentinformationtype: str | None = None,
 ) -> None:
     """Add a fileGrp element with file entries to fileSec.
 
@@ -102,6 +117,9 @@ def _add_file_group(
         use_label: USE attribute value (e.g. 'Schemas').
         contentinformationtype: If set, added as csip:CONTENTINFORMATIONTYPE
             on the fileGrp (used for Representations).
+        othercontentinformationtype: If set, added as
+            csip:OTHERCONTENTINFORMATIONTYPE on the fileGrp. Carries the
+            custom value when contentinformationtype is "OTHER".
     """
     if not files:
         return
@@ -113,6 +131,11 @@ def _add_file_group(
         file_grp.set(
             str(QName(NS["csip"], "CONTENTINFORMATIONTYPE")),
             contentinformationtype,
+        )
+    if othercontentinformationtype:
+        file_grp.set(
+            str(QName(NS["csip"], "OTHERCONTENTINFORMATIONTYPE")),
+            othercontentinformationtype,
         )
 
     for file_info in files.values():
@@ -152,6 +175,22 @@ def _add_struct_div(
         fptr.set("FILEID", file_info["uuid"])
 
 
+def _descriptive_mdtype(file_info: dict) -> tuple[str, str | None]:
+    """MDTYPE and OTHERMDTYPE for a dmdSec, from what collect_files detected.
+
+    An entry without detection data (one built by hand) is OTHER with the
+    file extension, the same rule as for a file that is not XML.
+    """
+    mdtype = file_info.get("mdtype", "OTHER")
+    othermdtype = file_info.get("othermdtype")
+    if mdtype != "OTHER":
+        return mdtype, None
+    if not othermdtype:
+        name = file_info.get("fgsfilename") or file_info.get("filelink", "")
+        othermdtype = Path(name).suffix.lstrip(".").lower() or "unknown"
+    return "OTHER", othermdtype
+
+
 def build_mets(
     header: MetsHeader,
     file_categories: dict[str, dict],
@@ -166,7 +205,11 @@ def build_mets(
             'documentation', 'representationmetadata'.
 
     Returns:
-        lxml ElementTree of the complete METS document.
+        lxml ElementTree of the complete METS document. Its OBJID, and the
+        LABEL of the root structMap div, hold a provisional IP_<uuid>;
+        create_package replaces both with the package name through
+        set_package_name, because the name is only known once the
+        package folder has been claimed.
     """
     representations = file_categories.get("representation", {})
     schemas = file_categories.get("schema", {})
@@ -175,28 +218,39 @@ def build_mets(
     documentation = file_categories.get("documentation", {})
     representation_md = file_categories.get("representationmetadata", {})
 
-    # Resolve effective content information type
+    # Content information type. The CSIP schema restricts
+    # csip:CONTENTINFORMATIONTYPE to a fixed list, so for a custom value it
+    # stays "OTHER" and the value goes into csip:OTHERCONTENTINFORMATIONTYPE.
     cit = header.contentinformationtype
-    if cit == "OTHER" and header.other_contentinformationtype:
-        cit = header.other_contentinformationtype
+    other_cit = header.other_contentinformationtype if cit == "OTHER" else ""
 
-    # Resolve effective TYPE
+    # TYPE. Same pattern as the content information type: a custom value keeps
+    # the vocabulary term "Other" in TYPE and goes into csip:OTHERTYPE, the
+    # attribute the CSIP schema declares for it.
     mets_type = header.type
-    if mets_type == "Other" and header.other_type:
-        mets_type = header.other_type
+    other_type = header.other_type if mets_type == "Other" else ""
 
     # ── Root element ──
     root = etree.Element(
         "mets",
-        attrib={"xmlns": "http://www.loc.gov/METS/"},
+        attrib={"xmlns": METS_NS},
         nsmap=NS,
     )
-    root.set("OBJID", f"IP_{uuid.uuid4()}")
+    root.set(
+        str(QName(NS["xsi"], "schemaLocation")),
+        " ".join(f"{ns} {xsd}" for ns, xsd in SCHEMA_LOCATIONS),
+    )
+    objid = f"IP_{uuid.uuid4()}"  # provisional, see set_package_name
+    root.set("OBJID", objid)
     if header.label:
         root.set("LABEL", header.label)
     root.set("TYPE", mets_type)
+    if other_type:
+        root.set(str(QName(NS["csip"], "OTHERTYPE")), other_type)
     root.set("PROFILE", "https://earksip.dilcis.eu/profile/E-ARK-SIP.xml")
     root.set(str(QName(NS["csip"], "CONTENTINFORMATIONTYPE")), cit)
+    if other_cit:
+        root.set(str(QName(NS["csip"], "OTHERCONTENTINFORMATIONTYPE")), other_cit)
 
     # ── metsHdr ──
     mets_hdr = etree.SubElement(root, "metsHdr")
@@ -232,22 +286,50 @@ def build_mets(
             alt.text = record.value
 
     # ── dmdSec ──
-    amd_ids: list[str] = []
-    dmd_uuid: str | None = None
-
-    if descriptive_md:
+    # One dmdSec per descriptive file. The METS schema allows at most one
+    # mdRef in a metadata section, so several files cannot share one.
+    dmd_ids: list[str] = []
+    dmd_created = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for file_info in descriptive_md.values():
         dmd_sec = etree.SubElement(root, "dmdSec")
-        dmd_uuid = _new_uuid()
-        dmd_sec.set("ID", dmd_uuid)
-        dmd_sec.set(
-            "CREATED",
-            datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        )
+        dmd_id = _new_uuid()
+        dmd_sec.set("ID", dmd_id)
+        dmd_sec.set("CREATED", dmd_created)
         dmd_sec.set("STATUS", "CURRENT")
-        for file_info in descriptive_md.values():
-            md_ref = etree.SubElement(dmd_sec, "mdRef")
+        dmd_ids.append(dmd_id)
+        md_ref = etree.SubElement(dmd_sec, "mdRef")
+        md_ref.set("LOCTYPE", "URL")
+        mdtype, othermdtype = _descriptive_mdtype(file_info)
+        md_ref.set("MDTYPE", mdtype)
+        if othermdtype:
+            md_ref.set("OTHERMDTYPE", othermdtype)
+        md_ref.set(str(QName(NS["xlink"], "type")), "simple")
+        md_ref.set(str(QName(NS["xlink"], "href")), file_info["filelink"])
+        md_ref.set("MIMETYPE", file_info["mimetype"])
+        md_ref.set("SIZE", file_info["filesize"])
+        md_ref.set("CREATED", file_info["createdate"])
+        md_ref.set("CHECKSUM", file_info["hashvalue"])
+        md_ref.set("CHECKSUMTYPE", "SHA-256")
+
+    amd_ids: list[str] = []
+
+    # ── amdSec ──
+    # A single amdSec holds both kinds of administrative metadata. The METS
+    # schema defines its children as an ordered sequence (techMD, rightsMD,
+    # sourceMD, digiprovMD), so techMD must be written before digiprovMD.
+    if representation_md or preservation_md:
+        amd_sec = etree.SubElement(root, "amdSec")
+        amd_sec.set("ID", _new_uuid())
+
+        # Representation metadata
+        for file_info in representation_md.values():
+            tech_md = etree.SubElement(amd_sec, "techMD")
+            tech_md.set("ID", _new_uuid())
+            tech_md.set("STATUS", "CURRENT")
+            md_ref = etree.SubElement(tech_md, "mdRef")
             md_ref.set("LOCTYPE", "URL")
-            md_ref.set("MDTYPE", "EAD")
+            md_ref.set("MDTYPE", "OTHER")
+            md_ref.set("OTHERMDTYPE", "RepresentationMetadata")
             md_ref.set(str(QName(NS["xlink"], "type")), "simple")
             md_ref.set(str(QName(NS["xlink"], "href")), file_info["filelink"])
             md_ref.set("MIMETYPE", file_info["mimetype"])
@@ -256,9 +338,8 @@ def build_mets(
             md_ref.set("CHECKSUM", file_info["hashvalue"])
             md_ref.set("CHECKSUMTYPE", "SHA-256")
 
-    # ── amdSec (preservation metadata) ──
-    if preservation_md:
-        amd_sec = etree.SubElement(root, "amdSec")
+        # Preservation metadata. Only these IDs go into amd_ids, which feeds
+        # the package-level Metadata div's ADMID.
         for file_info in preservation_md.values():
             amd_uuid = _new_uuid()
             digiprov = etree.SubElement(amd_sec, "digiprovMD")
@@ -276,37 +357,21 @@ def build_mets(
             md_ref.set("CHECKSUM", file_info["hashvalue"])
             md_ref.set("CHECKSUMTYPE", "SHA-256")
 
-    # ── amdSec (representation metadata) ──
-    if representation_md:
-        amd_sec_rep = etree.SubElement(root, "amdSec")
-        amd_sec_rep.set("ID", _new_uuid())
-        for file_info in representation_md.values():
-            tech_md = etree.SubElement(amd_sec_rep, "techMD")
-            tech_md.set("ID", _new_uuid())
-            tech_md.set("STATUS", "CURRENT")
-            md_ref = etree.SubElement(tech_md, "mdRef")
-            md_ref.set("LOCTYPE", "URL")
-            md_ref.set("MDTYPE", "OTHER")
-            md_ref.set("OTHERMDTYPE", "RepresentationMetadata")
-            md_ref.set(str(QName(NS["xlink"], "type")), "simple")
-            md_ref.set(str(QName(NS["xlink"], "href")), file_info["filelink"])
-            md_ref.set("MIMETYPE", file_info["mimetype"])
-            md_ref.set("SIZE", file_info["filesize"])
-            md_ref.set("CREATED", file_info["createdate"])
-            md_ref.set("CHECKSUM", file_info["hashvalue"])
-            md_ref.set("CHECKSUMTYPE", "SHA-256")
-
     # ── fileSec ──
-    file_sec = etree.SubElement(root, "fileSec")
-    file_sec.set("ID", _new_uuid())
+    # Only written when there are files to list. The METS schema requires at
+    # least one fileGrp, and the PRD allows metadata-only packages.
+    if documentation or schemas or representations or representation_md:
+        file_sec = etree.SubElement(root, "fileSec")
+        file_sec.set("ID", _new_uuid())
 
-    _add_file_group(file_sec, documentation, "Documentation")
-    _add_file_group(file_sec, schemas, "Schemas")
-    _add_file_group(
-        file_sec, representations, "Representations",
-        contentinformationtype=cit,
-    )
-    _add_file_group(file_sec, representation_md, "RepresentationMetadata")
+        _add_file_group(file_sec, documentation, "Documentation")
+        _add_file_group(file_sec, schemas, "Schemas")
+        _add_file_group(
+            file_sec, representations, "Representations",
+            contentinformationtype=cit,
+            othercontentinformationtype=other_cit,
+        )
+        _add_file_group(file_sec, representation_md, "RepresentationMetadata")
 
     # ── structMap ──
     struct_map = etree.SubElement(root, "structMap")
@@ -316,6 +381,9 @@ def build_mets(
 
     root_div = etree.SubElement(struct_map, "div")
     root_div.set("ID", _new_uuid())
+    # CSIP: the root div's LABEL is the package identifier, the same value
+    # as mets/@OBJID. Both are replaced together by set_package_name.
+    root_div.set("LABEL", objid)
 
     # Metadata div (always present)
     metadata_div = etree.SubElement(root_div, "div")
@@ -323,8 +391,8 @@ def build_mets(
     metadata_div.set("LABEL", "Metadata")
     if amd_ids:
         metadata_div.set("ADMID", " ".join(amd_ids))
-    if dmd_uuid:
-        metadata_div.set("DMDID", dmd_uuid)
+    if dmd_ids:
+        metadata_div.set("DMDID", " ".join(dmd_ids))
 
     # Schemas div
     _add_struct_div(root_div, schemas, "Schemas")
@@ -341,8 +409,8 @@ def build_mets(
         rep1_div = etree.SubElement(rep_div, "div")
         rep1_div.set("ID", _new_uuid())
         rep1_div.set("LABEL", "rep_1")
-        if amd_ids:
-            rep1_div.set("ADMID", " ".join(amd_ids))
+        # No ADMID here: the digiprovMD entries describe the whole package,
+        # and are referenced from the package-level Metadata div instead.
 
         # Data sub-div
         if representations:
@@ -363,3 +431,29 @@ def build_mets(
                 fptr.set("FILEID", file_info["uuid"])
 
     return etree.ElementTree(root)
+
+
+def set_package_name(tree: etree._ElementTree, name: str) -> None:
+    """Write the package name into the METS as its package identifier.
+
+    CSIP requires mets/@OBJID to be the package identifier, which is the
+    name of the package root folder, or of the zip without ".zip", and
+    the root structMap div's LABEL to be that same value. The name is
+    only known once create_package has claimed it, "_1" suffix included,
+    so build_mets writes a provisional IP_<uuid> and create_package calls
+    this with the final name before METS.xml is written.
+
+    Args:
+        tree: A document from build_mets. Updated in place.
+        name: The package name, for example "IP_20260927T101010_1".
+
+    Raises:
+        ValueError: The tree has no structMap root div, so it was not
+            built by build_mets. Nothing is changed then.
+    """
+    root = tree.getroot()
+    root_div = root.find("structMap/div")
+    if root_div is None:
+        raise ValueError("METS has no structMap root div to carry the package name")
+    root.set("OBJID", name)
+    root_div.set("LABEL", name)

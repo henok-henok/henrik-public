@@ -5,6 +5,8 @@ Entry point for both development and PyInstaller builds.
 """
 
 import logging
+import os
+import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -12,14 +14,20 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from eark_core import collect_files
-from mets_builder import (
-    Agent,
-    AltRecordID,
-    MetsHeader,
-    build_mets,
+from sip_job import (
+    Job,
+    JobAgents,
+    JobAltRecordIds,
+    JobFiles,
+    JobHeader,
+    JobOutput,
+    OrganizationAgent,
+    RepresentationFiles,
+    SystemAgent,
+    run_job,
+    validate_job,
 )
-from package_assembler import create_package
+
 
 def _exe_dir() -> Path:
     """Return the directory containing the running .exe, or the script dir."""
@@ -37,25 +45,75 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _setup_file_logging() -> None:
-    """Add file handler to root logger. Truncates on each run."""
+# Loggers that get DEBUG detail in the log file: this tool's own modules.
+# In the exe, app.py runs as __main__, so __name__ covers both cases.
+_PROJECT_LOGGERS = (
+    "eark_core", "mets_builder", "package_assembler", "sip_job", __name__,
+)
+
+
+def _log_file_candidates() -> list[Path]:
+    """Places to try for the log file, in order.
+
+    Next to the exe first. The per-user and temp locations cover an exe
+    started from somewhere read-only, such as a network share or
+    Program Files.
+    """
+    candidates = [LOG_FILE]
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(Path(local_appdata) / "EarkSipCreator" / LOG_FILE.name)
+    candidates.append(Path(tempfile.gettempdir()) / LOG_FILE.name)
+    return candidates
+
+
+def _setup_file_logging() -> Path | None:
+    """Add a file handler to the root logger. Truncates on each run.
+
+    Logging must never stop the app from starting. If no candidate location
+    is writable, the app runs with console logging only.
+
+    Returns:
+        Path of the log file, or None if no location was writable.
+    """
     root = logging.getLogger()
     for h in root.handlers:
         if isinstance(h, logging.FileHandler) and h.name == "eark_file":
-            return
-    fh = logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")
+            return Path(h.baseFilename)
+
+    fh = None
+    for candidate in _log_file_candidates():
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            # backslashreplace: a source path with a lone surrogate (NTFS
+            # allows one) must not make the handler drop the line, as
+            # strict UTF-8 would; the CLI's streams use the same rule
+            fh = logging.FileHandler(
+                candidate, mode="w", encoding="utf-8", errors="backslashreplace"
+            )
+            break
+        except OSError:
+            continue
+    if fh is None:
+        logger.warning("No writable location for the log file; console only")
+        return None
+
     fh.name = "eark_file"
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     )
     root.addHandler(fh)
-    root.setLevel(logging.DEBUG)
+    # DEBUG detail only from this tool's own modules. The root logger stays at
+    # INFO, so third-party libraries don't flood the file.
+    for name in _PROJECT_LOGGERS:
+        logging.getLogger(name).setLevel(logging.DEBUG)
     for h in root.handlers:
         if isinstance(h, logging.StreamHandler) and not isinstance(
             h, logging.FileHandler
         ):
             h.setLevel(logging.INFO)
+    return Path(fh.baseFilename)
 
 
 # ── Reusable file selector widget ──
@@ -306,9 +364,16 @@ class EarkSipCreatorApp(ctk.CTk):
         self.archivist_name = ctk.CTkEntry(grid, width=250)
         self.archivist_name.grid(row=1, column=1, sticky="w", padx=5)
 
+        # ID-type dropdowns are read-only like the header dropdowns: the PRD
+        # specifies a fixed list, and a typo would end up in the METS note.
         ctk.CTkLabel(grid, text="ID type:").grid(row=1, column=2, sticky="w")
+        self.archivist_id_type_var = ctk.StringVar(value=id_types[0])
         self.archivist_id_type = ctk.CTkComboBox(
-            grid, values=id_types, width=100
+            grid,
+            values=id_types,
+            variable=self.archivist_id_type_var,
+            width=100,
+            state="readonly",
         )
         self.archivist_id_type.grid(row=1, column=3, sticky="w", padx=5)
 
@@ -325,8 +390,13 @@ class EarkSipCreatorApp(ctk.CTk):
         self.creator_name.grid(row=4, column=1, sticky="w", padx=5)
 
         ctk.CTkLabel(grid, text="ID type:").grid(row=4, column=2, sticky="w")
+        self.creator_id_type_var = ctk.StringVar(value=id_types[0])
         self.creator_id_type = ctk.CTkComboBox(
-            grid, values=id_types, width=100
+            grid,
+            values=id_types,
+            variable=self.creator_id_type_var,
+            width=100,
+            state="readonly",
         )
         self.creator_id_type.grid(row=4, column=3, sticky="w", padx=5)
 
@@ -468,154 +538,88 @@ class EarkSipCreatorApp(ctk.CTk):
         self.status_label = ctk.CTkLabel(section, text="")
         self.status_label.pack(padx=10, pady=(0, 10))
 
+    # ── Snapshot the form into a Job (main thread only) ──
+
+    def _build_job(self) -> Job:
+        """Snapshot every form value into a Job.
+
+        Runs on the main thread, because tkinter is not thread-safe. The
+        Job is plain data, so the background worker can use it freely.
+        Text is passed as typed; sip_job strips it, as the GUI used to.
+        """
+        selectors = self.file_selectors
+        output_text = self.output_path_var.get().strip()
+        return Job(
+            header=JobHeader(
+                label=self.label_entry.get(),
+                type=self.type_var.get(),
+                other_type=self.other_type_entry.get(),
+                contentinformationtype=self.cit_var.get(),
+                other_contentinformationtype=self.other_cit_entry.get(),
+                recordstatus=self.recordstatus_var.get(),
+            ),
+            agents=JobAgents(
+                archivist=OrganizationAgent(
+                    name=self.archivist_name.get(),
+                    id_type=self.archivist_id_type.get(),
+                    id_value=self.archivist_id_value.get(),
+                ),
+                creator=OrganizationAgent(
+                    name=self.creator_name.get(),
+                    id_type=self.creator_id_type.get(),
+                    id_value=self.creator_id_value.get(),
+                ),
+                system=SystemAgent(
+                    name=self.system_name.get(),
+                    version=self.system_version.get(),
+                ),
+            ),
+            alt_record_ids=JobAltRecordIds(
+                SUBMISSIONAGREEMENT=self.submission_agreement.get(),
+                PREVIOUSSUBMISSIONAGREEMENT=self.prev_submission_agreement.get(),
+                REFERENCECODE=self.reference_code.get(),
+                PREVIOUSREFERENCECODE=self.prev_reference_code.get(),
+            ),
+            files=JobFiles(
+                schema=selectors["schema"].get_paths(),
+                representation=RepresentationFiles(
+                    paths=selectors["representation"].get_paths(),
+                    subdirectories=selectors["representation"].use_subdirectories(),
+                ),
+                representationmetadata=selectors["representationmetadata"].get_paths(),
+                descriptivemetadata=selectors["descriptivemetadata"].get_paths(),
+                preservationmetadata=selectors["preservationmetadata"].get_paths(),
+                documentation=selectors["documentation"].get_paths(),
+            ),
+            output=JobOutput(
+                folder=Path(output_text) if output_text else None,
+                zip=self.zip_var.get(),
+            ),
+        )
+
     # ── Validation ──
 
-    def _validate(self) -> bool:
-        """Validate form before generation. Returns True if valid."""
-        errors = []
-
-        if self.type_var.get() == "Other" and not self.other_type_entry.get().strip():
-            errors.append("TYPE is 'Other' but no custom type specified.")
-
-        if self.cit_var.get() == "OTHER" and not self.other_cit_entry.get().strip():
-            errors.append(
-                "CONTENTINFORMATIONTYPE is 'OTHER' but no custom value specified."
-            )
-
-        if not self.submission_agreement.get().strip():
-            errors.append("SUBMISSIONAGREEMENT is required.")
-
-        output_path = self.output_path_var.get().strip()
-        if not output_path:
-            errors.append("No output folder selected.")
-        elif not Path(output_path).is_dir():
-            errors.append("Output folder does not exist.")
-
+    def _validate(self, job: Job) -> bool:
+        """Show the validation errors for a job, if any. Returns True if valid."""
+        errors = validate_job(job)
         if errors:
             messagebox.showerror(
                 "Validation Error", "\n".join(errors)
             )
             return False
-
         return True
-
-    # ── Build header from GUI ──
-
-    def _build_header(self) -> MetsHeader:
-        """Construct a MetsHeader from current GUI values."""
-        agents = []
-
-        # Archivist agent
-        arch_name = self.archivist_name.get().strip()
-        if arch_name:
-            arch_id_type = self.archivist_id_type.get()
-            arch_id_value = self.archivist_id_value.get().strip()
-            note = (
-                f"{arch_id_type}:{arch_id_value}"
-                if arch_id_value
-                else None
-            )
-            agents.append(
-                Agent(
-                    role="ARCHIVIST",
-                    type="ORGANIZATION",
-                    name=arch_name,
-                    note=note,
-                    notetype="IDENTIFICATIONCODE" if note else None,
-                )
-            )
-
-        # Creator agent
-        creator_name = self.creator_name.get().strip()
-        if creator_name:
-            cr_id_type = self.creator_id_type.get()
-            cr_id_value = self.creator_id_value.get().strip()
-            note = (
-                f"{cr_id_type}:{cr_id_value}"
-                if cr_id_value
-                else None
-            )
-            agents.append(
-                Agent(
-                    role="CREATOR",
-                    type="ORGANIZATION",
-                    name=creator_name,
-                    note=note,
-                    notetype="IDENTIFICATIONCODE" if note else None,
-                )
-            )
-
-        # System agent
-        sys_name = self.system_name.get().strip()
-        if sys_name:
-            sys_version = self.system_version.get().strip()
-            agents.append(
-                Agent(
-                    role="OTHER",
-                    type="OTHER",
-                    othertype="SOFTWARE",
-                    otherrole="PRODUCER",
-                    name=sys_name,
-                    note=sys_version or None,
-                    notetype="SOFTWARE VERSION" if sys_version else None,
-                )
-            )
-
-        # Alt record IDs
-        alt_records = [
-            AltRecordID("SUBMISSIONAGREEMENT", self.submission_agreement.get().strip()),
-            AltRecordID(
-                "PREVIOUSSUBMISSIONAGREEMENT",
-                self.prev_submission_agreement.get().strip(),
-            ),
-            AltRecordID("REFERENCECODE", self.reference_code.get().strip()),
-            AltRecordID(
-                "PREVIOUSREFERENCECODE",
-                self.prev_reference_code.get().strip(),
-            ),
-        ]
-
-        return MetsHeader(
-            label=self.label_entry.get().strip(),
-            type=self.type_var.get(),
-            other_type=self.other_type_entry.get().strip(),
-            contentinformationtype=self.cit_var.get(),
-            other_contentinformationtype=self.other_cit_entry.get().strip(),
-            recordstatus=self.recordstatus_var.get(),
-            agents=agents,
-            alt_record_ids=alt_records,
-        )
-
-    # ── Collect file paths from selectors (main thread only) ──
-
-    def _snapshot_file_paths(self) -> dict[str, tuple[list[Path], bool]]:
-        """Snapshot file selector state on the main thread.
-
-        Returns dict mapping category key to (paths, use_subdirs).
-        """
-        result = {}
-        for key, selector in self.file_selectors.items():
-            paths = selector.get_paths()
-            if paths:
-                result[key] = (paths, selector.use_subdirectories())
-        return result
 
     # ── Generation ──
 
     def _on_generate(self) -> None:
         """Handle Generate button click.
 
-        Snapshots all GUI state on the main thread, then hands
-        plain Python objects to the background worker.
+        Snapshots all GUI state on the main thread, then hands the
+        plain-data Job to the background worker.
         """
-        if not self._validate():
+        job = self._build_job()
+        if not self._validate(job):
             return
-
-        # Snapshot all GUI state on main thread (tkinter is not thread-safe)
-        header = self._build_header()
-        file_path_snapshot = self._snapshot_file_paths()
-        output_dir = Path(self.output_path_var.get().strip())
-        zip_output = self.zip_var.get()
 
         self.generate_btn.configure(state="disabled")
         self.status_label.configure(text="Collecting files...")
@@ -623,49 +627,22 @@ class EarkSipCreatorApp(ctk.CTk):
 
         thread = threading.Thread(
             target=self._generate_worker,
-            args=(header, file_path_snapshot, output_dir, zip_output),
+            args=(job,),
             daemon=True,
         )
         thread.start()
 
-    def _generate_worker(
-        self,
-        header: MetsHeader,
-        file_path_snapshot: dict[str, tuple[list[Path], bool]],
-        output_dir: Path,
-        zip_output: bool,
-    ) -> None:
+    def _generate_worker(self, job: Job) -> None:
         """Run package generation in a background thread.
 
-        All GUI state is passed as arguments — this method never
-        reads widget state directly.
+        All GUI state arrives in the Job — this method never reads widget
+        state directly. Widget updates go through self.after, so they run
+        on the Tk thread.
         """
         try:
-            # Collect files (file I/O — safe in background thread)
-            file_categories: dict[str, dict] = {}
-            collect_warnings: list[str] = []
-            for key, (paths, use_subdirs) in file_path_snapshot.items():
-                files = collect_files(
-                    paths,
-                    key,
-                    subdirectories=use_subdirs,
-                    warnings=collect_warnings,
-                )
-                if files:
-                    file_categories[key] = files
+            def status_cb(text: str) -> None:
+                self.after(0, lambda: self.status_label.configure(text=text))
 
-            self.after(0, lambda: self.status_label.configure(
-                text="Building METS XML..."
-            ))
-
-            # Build METS
-            mets_tree = build_mets(header, file_categories)
-
-            self.after(0, lambda: self.status_label.configure(
-                text="Assembling package..."
-            ))
-
-            # Create package
             def progress_cb(current: int, total: int) -> None:
                 if total > 0:
                     self.after(
@@ -673,12 +650,10 @@ class EarkSipCreatorApp(ctk.CTk):
                         lambda c=current, t=total: self.progress_bar.set(c / t),
                     )
 
-            result_path = create_package(
-                output_dir,
-                mets_tree,
-                file_categories,
-                zip_output=zip_output,
+            result_path, collect_warnings = run_job(
+                job,
                 progress_callback=progress_cb,
+                status_callback=status_cb,
             )
 
             self.after(
@@ -690,9 +665,12 @@ class EarkSipCreatorApp(ctk.CTk):
 
         except Exception as e:
             logger.exception("Generation failed")
+            # Capture the message now. Python unbinds `e` when the except
+            # block ends, and the lambda only runs later on the Tk thread.
+            error_msg = str(e)
             self.after(
                 0,
-                lambda: self._on_generation_error(str(e)),
+                lambda: self._on_generation_error(error_msg),
             )
 
     def _on_generation_complete(
@@ -717,9 +695,7 @@ class EarkSipCreatorApp(ctk.CTk):
         message = f"E-ARK SIP package created:\n{result_path}"
         if warnings:
             joined = "\n".join(f"  - {w}" for w in warnings)
-            message += (
-                f"\n\nSkipped {len(warnings)} entry/entries:\n{joined}"
-            )
+            message += f"\n\n{len(warnings)} warning(s):\n{joined}"
             messagebox.showwarning("Success (with warnings)", message)
         else:
             messagebox.showinfo("Success", message)

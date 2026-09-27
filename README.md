@@ -11,7 +11,7 @@ Download links (where available) are on the
 
 | Tool | Description |
 |------|-------------|
-| [E-ARK SIP Creator](e-ark-sip-creator/) | Desktop GUI for creating E-ARK SIP packages (v2.1.0). Windows .exe available. `v1.0.0-beta.1` |
+| [E-ARK SIP Creator](e-ark-sip-creator/) | Desktop GUI for creating E-ARK SIP packages (v2.1.0); also runs headless from a job file. Windows .exe available. `v1.1.0-beta.2` |
 | [SQL Anonymizer](sql-anonymizer/) | Anonymize SQL for safe sharing with LLMs. Streamlit app, runs offline. `v1.5.3` |
 
 ## License
